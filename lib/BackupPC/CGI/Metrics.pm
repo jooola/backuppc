@@ -220,6 +220,24 @@ sub action
     print $content;
 }
 
+sub latestBackups
+{
+    my($backupsRef) = @_;
+    my @backups = @$backupsRef;
+
+    my $lastFull;
+    my $lastIncr;
+    for ( my $i = @backups ; $i > 0 ; $i-- ) {
+        if ( not $lastFull and $metrics{hosts}{$host}{backups}{$i}{type} eq "full" ) {
+            $lastFull = $metrics{hosts}{$host}{backups}[$i];
+        } elsif ( not $lastIncr and $metrics{hosts}{$host}{backups}{$i}{type} eq "incr" ) {
+            $lastIncr = $metrics{hosts}{$host}{backups}[$i];
+        }
+        last if ( $lastIncr and $lastFull );
+    }
+    return ($lastFull, $lastIncr);
+}
+
 sub encode_rss
 {
     my($metricsRef) = @_;
@@ -241,12 +259,21 @@ sub encode_rss
 
     foreach my $host ( sort keys %{$metrics{hosts}} ) {
         my($fullCnt, $fullAge, $fullSize, $fullRate, $incrCnt, $incrAge, $hostState, $hostDisabled, $hostLastAttempt);
-        $fullCnt  = $metrics{hosts}{$host}{full_count};
-        $fullAge  = sprintf("%.1f", (time - $metrics{hosts}{$host}{full_timestamp}) / (24 * 3600));
-        $fullSize = sprintf("%.2f", $metrics{hosts}{$host}{full_size} / (1024**3));
-        $fullRate = sprintf("%.2f", $metrics{hosts}{$host}{full_rate} / (1024**2));
-        $incrCnt  = $metrics{hosts}{$host}{incr_count};
-        $incrAge  = sprintf("%.1f", (time - $metrics{hosts}{$host}{incr_timestamp}) / (24 * 3600));
+
+        my($lastFull, $lastIncr) = latestBackups(\@{$metrics{hosts}{$host}{backups}});
+
+        $fullCnt = $metrics{hosts}{$host}{full_count};
+        $incrCnt = $metrics{hosts}{$host}{incr_count};
+
+        if ( $lastFull ) {
+            $fullAge  = sprintf("%.1f", (time - $lastFull{start_time}) / (24 * 3600));
+            $fullSize = sprintf("%.2f", $lastFull{size} / (1024**3));
+            $fullRate = sprintf("%.2f", $lastFull{rate} / (1024**2));
+        }
+
+        if ( $lastIncr ) {
+            $incrAge = sprintf("%.1f", (time - $lastIncr{start_time}) / (24 * 3600));
+        }
 
         my $error;
         if (    $metrics{hosts}{$host}{state} ne "Status_backup_in_progress"
