@@ -80,7 +80,7 @@ sub action
         user_count       => $QueueLen{UserQueue},
     };
 
-    my %poolMapper = (
+    my %mapper = (
         dir_count           => "DirCnt",
         file_count          => "FileCnt",
         remove_file_count   => "FileCntRm",
@@ -95,13 +95,13 @@ sub action
         my($name) = @_;
         my %pool = (time => $Info{"${name}Time"});
 
-        foreach my $key ( keys %poolMapper ) {
-            $pool{$key} = $Info{"${name}4$poolMapper{$key}"};
+        foreach my $key ( keys %mapper ) {
+            $pool{$key} = $Info{"${name}4$mapper{$key}"};
         }
 
         if ( $Conf{PoolV3Enabled} ) {
-            foreach my $key ( keys %poolMapper ) {
-                $pool{$key} .= $Info{"${name}$poolMapper{$key}"};
+            foreach my $key ( keys %mapper ) {
+                $pool{$key} .= $Info{"${name}$mapper{$key}"};
             }
         }
         return \%pool;
@@ -114,10 +114,8 @@ sub action
     # Host metrics
     #
     foreach my $host ( GetUserHosts(1) ) {
-        my($fullAge, $fullCount, $fullDuration, $fullRate, $fullSize, $incrAge, $incrCount, $incrDuration);
-
-        $fullCount = $incrCount = 0;
-        $fullAge   = $incrAge   = -1;
+        my $fullCount = 0;
+        my $incrCount = 0;
 
         my @Backups = $bpc->BackupInfoRead($host);
         $bpc->ConfigRead($host);
@@ -126,46 +124,60 @@ sub action
         next if ( $Conf{XferMethod} eq "archive" );
         next if ( !$Privileged && !CheckPermission($host) );
 
+        my @backups;
         for ( my $i = 0 ; $i < @Backups ; $i++ ) {
-
             if ( $Backups[$i]{type} eq "full" ) {
                 $fullCount++;
-                if ( $fullAge < 0 || $Backups[$i]{startTime} > $fullAge ) {
-                    $fullAge      = $Backups[$i]{startTime};
-                    $fullDuration = $Backups[$i]{endTime} - $Backups[$i]{startTime};
-                    $fullSize     = $Backups[$i]{size};
-                }
-
             } elsif ( $Backups[$i]{type} eq "incr" ) {
                 $incrCount++;
-                if ( $incrAge < 0 || $Backups[$i]{startTime} > $incrAge ) {
-                    $incrAge      = $Backups[$i]{startTime};
-                    $incrDuration = $Backups[$i]{endTime} - $Backups[$i]{startTime};
-                }
+            } else {
+                next;
             }
+
+            my($duration, $rate);
+
+            $duration = $Backups[$i]{endTime} - $Backups[$i]{startTime};
+
+            if ( $Backups[$i]{startTime} > 0 ) {
+                $rate = $Backups[$i]{size} / ($duration <= 0 ? 1 : $duration);
+            }
+
+            push(
+                @backups,
+                {
+                    number            => $Backups[$i]{num},
+                    type              => $Backups[$i]{type},
+                    start_time        => $Backups[$i]{startTime},
+                    end_time          => $Backups[$i]{endTime},
+                    duration          => $duration,
+                    rate              => $rate,
+                    size              => $Backups[$i]{size},
+                    files_count       => $Backups[$i]{nFiles},
+                    size_exist        => $Backups[$i]{sizeExist},
+                    files_exist_count => $Backups[$i]{nFilesExist},
+                    size_new          => $Backups[$i]{sizeExist},
+                    files_new_count   => $Backups[$i]{nFilesExist},
+                    transfert_method  => $Backups[$i]{xferMethod},
+                }
+            );
         }
 
-        if ( $fullAge > 0 ) {
-            $fullRate = $fullSize / ($fullDuration <= 0 ? 1 : $fullDuration);
-        }
+        sort { $a{start_time} <=> $b{start_time} } @backups;
 
         $metrics{hosts}{$host} = {
-            full_age        => int($fullAge),
+            backups => \@backups,
+
             full_count      => $fullCount,
-            full_duration   => $fullDuration,
             full_keep_count => $Conf{FullKeepCnt},
             full_period     => $Conf{FullPeriod},
-            full_rate       => int($fullRate),
-            full_size       => int($fullSize),
-            incr_age        => int($incrAge),
             incr_count      => $incrCount,
-            incr_duration   => $incrDuration,
             incr_keep_count => $Conf{IncrKeepCnt},
             incr_period     => $Conf{IncrPeriod},
-            error           => $Status{$host}{error},
-            reason          => $Status{$host}{reason},
-            state           => $Status{$host}{state},
-            disabled        => $Conf{BackupsDisable},
+
+            error    => $Status{$host}{error},
+            reason   => $Status{$host}{reason},
+            state    => $Status{$host}{state},
+            disabled => $Conf{BackupsDisable},
         };
     }
 
