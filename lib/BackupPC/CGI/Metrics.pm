@@ -198,135 +198,13 @@ sub action
             print $LoadErrorXMLRSS;
             return;
         }
-
         $contentType = "text/xml";
+        $content     = encode_rss(\%metrics);
 
-        my $rss = new XML::RSS(
-            version  => '0.91',
-            encoding => 'utf-8'
-        );
-
-        my $baseURL = $ENV{HTTPS} eq "on" ? 'https://' : 'http://' . $ENV{'SERVER_NAME'} . $ENV{SCRIPT_NAME};
-
-        $rss->channel(
-            title       => eval("qq{$Lang->{RSS_Doc_Title}}"),
-            link        => $baseURL,
-            language    => $Conf{Language},
-            description => eval("qq{$Lang->{RSS_Doc_Description}}"),
-        );
-
-        foreach my $host ( sort keys %{$metrics{hosts}} ) {
-            my(
-                $fullCnt, $fullAge,   $fullSize,     $fullRate, $incrCnt,
-                $incrAge, $hostState, $hostDisabled, $hostLastAttempt
-            );
-            $fullCnt  = $metrics{hosts}{$host}{full_count};
-            $fullAge  = sprintf("%.1f", (time - $metrics{hosts}{$host}{full_timestamp}) / (24 * 3600));
-            $fullSize = sprintf("%.2f", $metrics{hosts}{$host}{full_size} / (1024**3));
-            $fullRate = sprintf("%.2f", $metrics{hosts}{$host}{full_rate} / (1024**2));
-            $incrCnt  = $metrics{hosts}{$host}{incr_count};
-            $incrAge  = sprintf("%.1f", (time - $metrics{hosts}{$host}{incr_timestamp}) / (24 * 3600));
-
-            my $error;
-            if (    $metrics{hosts}{$host}{state} ne "Status_backup_in_progress"
-                and $metrics{hosts}{$host}{state} ne "Status_restore_in_progress"
-                and $metrics{hosts}{$host}{error} ne "" ) {
-                ($error = $metrics{hosts}{$host}{error}) =~ s/(.{48}).*/$1.../;
-                $error = " ($error)";
-            }
-
-            my $hostState       = $Lang->{$metrics{hosts}{$host}{state}};
-            my $hostLastAttempt = $Lang->{$metrics{hosts}{$host}{reason}} . $error;
-            my $hostDisabled    = $metrics{hosts}{$host}{disabled};
-
-            my $description = eval("qq{$Lang->{RSS_Host_Summary}}");
-
-            $rss->add_item(
-                title       => "$host, $hostState, $hostLastAttempt",
-                link        => "$baseURL?host=$host",
-                description => $description,
-            );
-        }
-
-        $content = $rss->as_string;
     } elsif ( $format eq "prometheus" ) {
         $contentType = "text/plain";
+        $content     = encode_prometheus(\%metrics);
 
-        my %mapper = (
-            hosts => {
-                full_age        => {desc => "Age of the last full backup"},
-                full_count      => {desc => "Number of full backups"},
-                full_duration   => {desc => "Transfert time in seconds of the last full backup"},
-                full_keep_count => {desc => "Number of full backups to keep"},
-                full_period     => {desc => "Minimum period in days between full backups"},
-                full_rate       => {desc => "Transfert rate in bytes/s of the last full backup"},
-                full_size       => {desc => "Size in bytes of the last full backup"},
-                incr_age        => {desc => "Age of the last incremental backup"},
-                incr_count      => {desc => "Number of incremental backups"},
-                incr_duration   => {desc => "Transfert time in seconds of the last incremental backup"},
-                incr_keep_count => {desc => "Number of incremental backups to keep"},
-                incr_period     => {desc => "Minimum period in days between incremental backups"},
-                disabled        => {desc => "Backups disabled"},
-
-                error  => {kind => "label", desc => "Host error"},
-                reason => {kind => "label", desc => "Host state reason"},
-                state  => {kind => "label", desc => "Host state"},
-            },
-            disk => {
-                usage       => {desc => "Disk usage in %"},
-                inode_usage => {desc => "Disk inode usage in %"},
-            },
-            queues => {
-                background_count => {desc => "Number of jobs in the background queue"},
-                command_count    => {desc => "Number of jobs in the command queue"},
-                user_count       => {desc => "Number of jobs in the user queue"},
-            },
-            pool => {
-                dir_count         => {desc => "Number of directories in the pool"},
-                file_count        => {desc => "Number of files in the pool"},
-                remove_file_count => {desc => "Number of files to remove in the pool"},
-                remove_size       => {desc => " Size in bytes to remove from the pool"},
-                size              => {desc => "Size in bytes of the pool"},
-            },
-            cpool => {
-                dir_count         => {desc => "Number of directories in the pool"},
-                file_count        => {desc => "Number of files in the pool"},
-                remove_file_count => {desc => "Number of files to remove in the pool"},
-                remove_size       => {desc => " Size in bytes to remove from the pool"},
-                size              => {desc => "Size in bytes of the pool"},
-            },
-        );
-
-        foreach my $section ( sort keys %mapper ) {
-            foreach my $entry ( sort keys %{$mapper{$section}} ) {
-
-                # Ignore empty pools
-                next if ( ($section eq "pool" or $section eq "cpool") and $metrics{$section}{file_count} <= 0 );
-
-                my $promKey = "backuppc_${section}_${entry}";
-
-                # Generate prometheus header
-                $content .= "# HELP $promKey $mapper{$section}{$entry}{desc}\n";
-                $content .= "# TYPE $promKey gauge\n";
-
-                if ( $section eq "hosts" ) {
-                    foreach my $host ( sort keys %{$metrics{hosts}} ) {
-                        if ( $mapper{hosts}{$entry}{kind} eq 'label' ) {
-                            if ( $metrics{hosts}{$host}{$entry} ) {
-                                $content .= "${promKey}\{host=\"$host\",label=\"$metrics{hosts}{$host}{$entry}\"\} 1\n";
-                            }
-                        } else {
-                            $content .= "${promKey}\{host=\"$host\"\} $metrics{hosts}{$host}{$entry}\n";
-                        }
-                    }
-
-                } else {
-                    $content .= "$promKey $metrics{$section}{$entry}\n";
-                }
-
-                $content .= "\n";
-            }
-        }
     } else {
         if ( $LoadErrorJSONXS ) {
             print "Status: 500 Internal Server Error\n";
@@ -334,13 +212,151 @@ sub action
             print $LoadErrorJSONXS;
             return;
         }
-
         $contentType = "application/json";
         $content     = encode_json(\%metrics);
     }
 
     print "Content-type: $contentType\n\n";
     print $content;
+}
+
+sub encode_rss
+{
+    my($metricsRef) = @_;
+    my %metrics = %$metricsRef;
+
+    my $rss = new XML::RSS(
+        version  => '0.91',
+        encoding => 'utf-8'
+    );
+
+    my $baseURL = $ENV{HTTPS} eq "on" ? 'https://' : 'http://' . $ENV{'SERVER_NAME'} . $ENV{SCRIPT_NAME};
+
+    $rss->channel(
+        title       => eval("qq{$Lang->{RSS_Doc_Title}}"),
+        link        => $baseURL,
+        language    => $Conf{Language},
+        description => eval("qq{$Lang->{RSS_Doc_Description}}"),
+    );
+
+    foreach my $host ( sort keys %{$metrics{hosts}} ) {
+        my($fullCnt, $fullAge, $fullSize, $fullRate, $incrCnt, $incrAge, $hostState, $hostDisabled, $hostLastAttempt);
+        $fullCnt  = $metrics{hosts}{$host}{full_count};
+        $fullAge  = sprintf("%.1f", (time - $metrics{hosts}{$host}{full_timestamp}) / (24 * 3600));
+        $fullSize = sprintf("%.2f", $metrics{hosts}{$host}{full_size} / (1024**3));
+        $fullRate = sprintf("%.2f", $metrics{hosts}{$host}{full_rate} / (1024**2));
+        $incrCnt  = $metrics{hosts}{$host}{incr_count};
+        $incrAge  = sprintf("%.1f", (time - $metrics{hosts}{$host}{incr_timestamp}) / (24 * 3600));
+
+        my $error;
+        if (    $metrics{hosts}{$host}{state} ne "Status_backup_in_progress"
+            and $metrics{hosts}{$host}{state} ne "Status_restore_in_progress"
+            and $metrics{hosts}{$host}{error} ne "" ) {
+            ($error = $metrics{hosts}{$host}{error}) =~ s/(.{48}).*/$1.../;
+            $error = " ($error)";
+        }
+
+        my $hostState       = $Lang->{$metrics{hosts}{$host}{state}};
+        my $hostLastAttempt = $Lang->{$metrics{hosts}{$host}{reason}} . $error;
+        my $hostDisabled    = $metrics{hosts}{$host}{disabled};
+
+        my $description = eval("qq{$Lang->{RSS_Host_Summary}}");
+
+        $rss->add_item(
+            title       => "$host, $hostState, $hostLastAttempt",
+            link        => "$baseURL?host=$host",
+            description => $description,
+        );
+    }
+
+    return $rss->as_string;
+}
+
+
+sub encode_prometheus
+{
+    my($metricsRef) = @_;
+    my %metrics = %$metricsRef;
+
+    my $content;
+
+    my %mapper = (
+        hosts => {
+            full_age        => {desc => "Age of the last full backup"},
+            full_count      => {desc => "Number of full backups"},
+            full_duration   => {desc => "Transfert time in seconds of the last full backup"},
+            full_keep_count => {desc => "Number of full backups to keep"},
+            full_period     => {desc => "Minimum period in days between full backups"},
+            full_rate       => {desc => "Transfert rate in bytes/s of the last full backup"},
+            full_size       => {desc => "Size in bytes of the last full backup"},
+            incr_age        => {desc => "Age of the last incremental backup"},
+            incr_count      => {desc => "Number of incremental backups"},
+            incr_duration   => {desc => "Transfert time in seconds of the last incremental backup"},
+            incr_keep_count => {desc => "Number of incremental backups to keep"},
+            incr_period     => {desc => "Minimum period in days between incremental backups"},
+            disabled        => {desc => "Backups disabled"},
+
+            error  => {kind => "label", desc => "Host error"},
+            reason => {kind => "label", desc => "Host state reason"},
+            state  => {kind => "label", desc => "Host state"},
+        },
+        disk => {
+            usage       => {desc => "Disk usage in %"},
+            inode_usage => {desc => "Disk inode usage in %"},
+        },
+        queues => {
+            background_count => {desc => "Number of jobs in the background queue"},
+            command_count    => {desc => "Number of jobs in the command queue"},
+            user_count       => {desc => "Number of jobs in the user queue"},
+        },
+        pool => {
+            dir_count         => {desc => "Number of directories in the pool"},
+            file_count        => {desc => "Number of files in the pool"},
+            remove_file_count => {desc => "Number of files to remove in the pool"},
+            remove_size       => {desc => " Size in bytes to remove from the pool"},
+            size              => {desc => "Size in bytes of the pool"},
+        },
+        cpool => {
+            dir_count         => {desc => "Number of directories in the pool"},
+            file_count        => {desc => "Number of files in the pool"},
+            remove_file_count => {desc => "Number of files to remove in the pool"},
+            remove_size       => {desc => " Size in bytes to remove from the pool"},
+            size              => {desc => "Size in bytes of the pool"},
+        },
+    );
+
+    foreach my $section ( sort keys %mapper ) {
+        foreach my $entry ( sort keys %{$mapper{$section}} ) {
+
+            # Ignore empty pools
+            next if ( ($section eq "pool" or $section eq "cpool") and $metrics{$section}{file_count} <= 0 );
+
+            my $promKey = "backuppc_${section}_${entry}";
+
+            # Generate prometheus header
+            $content .= "# HELP $promKey $mapper{$section}{$entry}{desc}\n";
+            $content .= "# TYPE $promKey gauge\n";
+
+            if ( $section eq "hosts" ) {
+                foreach my $host ( sort keys %{$metrics{hosts}} ) {
+                    if ( $mapper{hosts}{$entry}{kind} eq 'label' ) {
+                        if ( $metrics{hosts}{$host}{$entry} ) {
+                            $content .= "${promKey}\{host=\"$host\",label=\"$metrics{hosts}{$host}{$entry}\"\} 1\n";
+                        }
+                    } else {
+                        $content .= "${promKey}\{host=\"$host\"\} $metrics{hosts}{$host}{$entry}\n";
+                    }
+                }
+
+            } else {
+                $content .= "$promKey $metrics{$section}{$entry}\n";
+            }
+
+            $content .= "\n";
+        }
+    }
+
+    return $content;
 }
 
 1;
